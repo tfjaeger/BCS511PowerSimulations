@@ -1,0 +1,176 @@
+---
+title: "Simualtion-based approaches to Type I and II error analyses"
+author: "T. Florian Jaeger"
+date: "11/19/2019"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: yes
+    toc: no
+  word_document:
+    toc: no
+  html_document:
+    df_print: paged
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, results = "markup", cache = TRUE,
+  fig.align = "center", fig.width = 8)
+
+options(width = 100, mc.cores = 4) 
+```
+
+```{r libraries, include=FALSE}
+library("tidyverse")
+library("magrittr")
+library("broom")     # for elegant handling of model outputs
+library("lme4")
+library("lmerTest")
+library("brms")
+library("tictoc")    # for measuring compute time
+
+theme_set(theme_bw())
+```
+
+```{r functions, include=FALSE}
+```
+
+# Preparation for this class
+Work through the examples in the Gelman and Hill reading and do Exercises 7.1 & 7.3 (at the end of Ch. 7) and 8.1 (Ch 8). Create an R markdown document with your solutions and send it to the instructor before class.
+
+
+# 
+```{r}
+nexp = 1000
+nsubj = 24
+ntrial = 60
+
+d = 
+  crossing(
+    exp = 1:nexp,
+    condition = c("A","B","C"),
+    trial = 1:ntrial,
+    subject = 1:nsubj
+  ) %>%
+  mutate(
+    muLogOddsCorrect = qlogis(case_when(
+      condition == "A" ~ .5,
+      condition == "B" ~ .61,
+      condition == "C" ~ .88
+    )),
+    muLogRT = case_when(
+      condition == "A" ~ 6.2,
+      condition == "B" ~ 6.2,
+      condition == "C" ~ 7.3
+    )
+  ) %>%
+  group_by(subject) %>%
+  mutate(
+    muLogOddsCorrect.bySubject = rnorm(1, 0, 1.5),
+    muLogRT.bySubject = rnorm(1, 0, 0.3)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    muPCorrect = plogis(muLogOddsCorrect + muLogOddsCorrect.bySubject),
+    muLogRT = muLogRT + muLogRT.bySubject
+  ) %>%
+  mutate(
+    correct = rbinom(nrow(.), 1, muPCorrect),
+    RT = round(exp(rnorm(nrow(.), muLogRT, .05)), 3)
+  ) %>%
+  as_tibble() %>%
+  select(-starts_with("mu")) %>%
+  mutate_at(c("condition", "subject"), factor)
+```
+
+# Compute time
+
+There are typically many different ways to achieve the same goal. Some are easier to write, some are easier to read, some are faster, some consume less memory, etc. When we conduct any non-trivial simulation, we move into territory where it pays off to try to be computationally efficient. Here is an example where a small difference in programming makes a big difference in compute time.
+
+We will create 10 simulated experiments with 24 subjects and 60 trials each for 3 conditions. For each trial, we set and simulate accuracy and reaction times.
+
+```{r}
+nexp = 10
+nsubj = 24
+ntrial = 60
+
+tic()
+d = 
+  crossing(
+    exp = 1:nexp,
+    condition = c("A","B","C"),
+    trial = 1:ntrial,
+    subject = 1:nsubj
+  ) %>%
+  mutate(
+    muLogOddsCorrect = qlogis(case_when(
+      condition == "A" ~ .5,
+      condition == "B" ~ .61,
+      condition == "C" ~ .88
+    )),
+    muLogRT = case_when(
+      condition == "A" ~ 6.2,
+      condition == "B" ~ 6.2,
+      condition == "C" ~ 7.3
+    )
+  ) %>%
+  group_by(subject) %>%
+  mutate(
+    muLogOddsCorrect.bySubject = rnorm(1, 0, 1.5),
+    muLogRT.bySubject = rnorm(1, 0, 0.3)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    muPCorrect = plogis(muLogOddsCorrect + muLogOddsCorrect.bySubject),
+    muLogRT = muLogRT + muLogRT.bySubject
+  ) %>%
+  as_tibble() %>%
+  mutate_at(c("condition", "subject"), factor)
+toc()
+```
+
+Now let's sample the responses either rowwise() or as a vector. We're setting a seed to make the compute time comparison maximally informative. First, rowwise:
+
+```{r}
+set.seed(1234)
+
+tic()
+d %>%
+  rowwise() %>%
+  mutate(
+    correct = rbinom(1, 1, muPCorrect),
+    RT = round(exp(rnorm(1, muLogRT, .05)), 3)
+  ) %>%
+  select(-starts_with("mu"))
+toc()
+```
+
+And now as a vector:
+
+```{r}
+set.seed(1234)
+
+tic()
+d %>%
+  # Calls mutate over the ungrouped data, thus handing *vectors* 
+  # as arguments to rbinom and rnorm
+  mutate(
+    correct = rbinom(nrow(.), 1, muPCorrect),
+    RT = round(exp(rnorm(nrow(.), muLogRT, .05)), 3)
+  ) %>%
+  select(-starts_with("mu"))
+toc()
+```
+
+As you can see, the difference in compute time is enormous (but the output is the same). So code wisely!
+
+# References
+
+ * Gelman & Hill. 2007. Data Analysis Using Regression and Multilevel/Hierarchical Models. (Ch. 7.1-7.2, 8.1-8.3, ~20pp)
+
+# Session info
+```{r session_info, echo=FALSE, results='markup'}
+devtools::session_info()
+```
