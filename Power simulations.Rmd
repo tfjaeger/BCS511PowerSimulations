@@ -16,37 +16,83 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-  echo = TRUE, results = "markup", cache = TRUE,
+  echo = TRUE, results = "markup", cache = FALSE,
   fig.align = "center", fig.width = 8)
 
 options(width = 100, mc.cores = 4) 
 ```
 
 ```{r libraries, include=FALSE}
-library("tidyverse")
-library("magrittr")
+library("tidyverse") 
+library("magrittr")  # for pipes
 library("broom")     # for elegant handling of model outputs
-library("lme4")
-library("lmerTest")
-library("brms")
+library("lme4")      # for GLMMs
+library("lmerTest")  # to get p-values for LMEs
 library("tictoc")    # for measuring compute time
+library("future")    # for parallel computing over multiple corrs
+library("furrr")     # for parallelization of map and other purrrs
 
 theme_set(theme_bw())
-```
-
-```{r functions, include=FALSE}
 ```
 
 # Preparation for this class
 Work through the examples in the Gelman and Hill reading and do Exercises 7.1 & 7.3 (at the end of Ch. 7) and 8.1 (Ch 8). Create an R markdown document with your solutions and send it to the instructor before class.
 
+# The simulation-based approach
+For many situations, power can be calculated analytically. However, often we find ourselves in situations where this isn't possible or at least not trivial (for us). In that case taking a simulation-based approach is simple and powerful. You can use this approach to obtain estimates of power, Type I error, or simply to build intuitions about how an analytical or visualization tool works. Here we focus on power simulations. 
 
-# 
-```{r}
+## Power simulations
+Power is the estimated proportion of times that you will obtain a significant results, if you repeat an experiment over and over again. As such, power estimates depend on:
+
+ * The analysis approach you intend to use (you can compare the power of multiple approaches). For example, power for trial-level vs. subject-level analyses can/will differ; power for a *t*-test can/will likely differ from power for an LM or Wilcoxon signed rank test, etc.
+ 
+ * Known properties of the data you plan to collect---for example, the amount of data, and how it's structured (e.g., number of trials per subject and number of subjects).
+ 
+ * Assumptions about the ground truth. This includes:
+ 
+   * Assumptions about the **effect sizes** / means.
+   
+   * Assumptions about the amount of **variability** of the data, possibly at multiple levels of the data (trial-level noise vs. subject-level noise)
+   
+   * Assumptions about the **type of distribution** the outcome variables take (e.g., Normal, lognormal, bernoulli, poisson, etc. or none of these).
+   
+   * And and and ... for example, there might be auto-correlations between trials, subjects might have attentional lapses, experimenters might make mistakes during the item creation etc. For any of these and other possibilities, we can decide whether we want to try to account for them in our power estimates.
+
+## Parametric vs. non-parametric approaches
+There's broadly two types of approaches---just as for most of statistics: parametric and non-parametric approaches. In the parametric approach, we simulate data from parametric distributions (e.g., Normal, binomial, poisson, etc.). Under non-parametric approaches, such as cross-validation or bootstrap, we use previously collected data and resample it---typically with replacement---
+in order to simulate the 'natural' or 'actual' distribution of the data. Both approaches have their pros and cons. Here we focus on parametric approaches. This is not an endorsement of those approaches, but rather a choice driven by pedagogical considerations: it allows us to keep our focus on the generative logic behind simulation-based approaches.
+
+
+# An example
+```{r, include=FALSE}
 nexp = 1000
 nsubj = 24
-ntrial = 60
+ntrial = 16
 
+# Information about distribution of accuracy variable
+Correct.mu.cond = c("A" = .5, 
+                    "B" = .55, 
+                    "C" = .81) # proportions
+Correct.sd.bySubj = 1
+
+# Information about distribution of RT variable
+RT.mu.cond = c("A" = 6.2, 
+               "B" = 6.1, 
+               "C" = 7.3)
+RT.sd.bySubj = .6
+RT.sd.resid = .3
+```
+
+To familiarize ourselves with power simulations, we will create ```r nexp``` simulated experiments with ```r nsubj``` subjects and ```r ntrial``` trials each for ```r length(RT.mu.cond)``` conditions. This gives us ```r nsubj * ntrial * length(RT.mu.cond)``` observations per simulated experiment. For each trial, we set mean (log-odds of) accuracy and mean (log-transformed) reaction times (RTs). We also specify by-subject variability in the *intercept* of both accuracy and RTs, as well as residual variability in RTs.
+
+**NB:** *How many data sets you need for a stable estimate of power, depends on many factors, including the variability of the data.*
+
+## Make a pipe for data generation
+
+We might later embed this into a function, but for now let's just make a one-time use pipe. As a first step, let's make a pipe that defines our design. The *dplyr* function *crossing* is very helpful in that it makes it trivial to create all unique combinations of an arbitrary number of variables and their values. We're surrounding the pipe by tic() and toc() to measure the compute time.
+
+```{r design}
+tic()
 d = 
   crossing(
     exp = 1:nexp,
@@ -55,37 +101,117 @@ d =
     subject = 1:nsubj
   ) %>%
   mutate(
-    muLogOddsCorrect = qlogis(case_when(
-      condition == "A" ~ .5,
-      condition == "B" ~ .61,
-      condition == "C" ~ .88
-    )),
-    muLogRT = case_when(
-      condition == "A" ~ 6.2,
-      condition == "B" ~ 6.2,
-      condition == "C" ~ 7.3
-    )
+    muLogOddsCorrect = qlogis(Correct.mu.cond[condition]),
+    muLogRT = RT.mu.cond[condition]
   ) %>%
   group_by(subject) %>%
   mutate(
-    muLogOddsCorrect.bySubject = rnorm(1, 0, 1.5),
-    muLogRT.bySubject = rnorm(1, 0, 0.3)
+    muLogOddsCorrect.bySubject = rnorm(1, 0, Correct.sd.bySubj),
+    muLogRT.bySubject = rnorm(1, 0, RT.sd.bySubj)
   ) %>%
   ungroup() %>%
   mutate(
     muPCorrect = plogis(muLogOddsCorrect + muLogOddsCorrect.bySubject),
     muLogRT = muLogRT + muLogRT.bySubject
   ) %>%
-  mutate(
-    correct = rbinom(nrow(.), 1, muPCorrect),
-    RT = round(exp(rnorm(nrow(.), muLogRT, .05)), 3)
-  ) %>%
-  as_tibble() %>%
-  select(-starts_with("mu")) %>%
   mutate_at(c("condition", "subject"), factor)
+toc()
 ```
 
-# Compute time
+So far, we've created the design and underlying ground truth of ```r nexp``` experiments. Next, let's *generate* response data---accuracy and RTs---by randomly sampling from the design. We will set a seed for replicability's sake.
+
+```{r sample}
+set.seed(76)
+
+tic()
+d %<>%
+  mutate(
+    correct = rbinom(nrow(.), 1, muPCorrect),
+    RT = round(exp(rnorm(nrow(.), muLogRT, RT.sd.resid)), 0)
+  ) 
+toc()
+
+# If we want to we could remove the ground truth information now.
+# Here we just show the output that without the ground truth (but)
+# keep it around b/c why not).
+d %>%
+  select(-starts_with("mu")) 
+```
+## Visualize example experiments
+
+To get an idea of the type of data we've just generated and how it varies across experiments, let's visualize 8 randomly drawn experiments:
+
+```{r visualize}
+d %>% 
+  filter(exp == sample(x = unique(exp), size = 8,replace = F)) %>%
+  ggplot(aes(x = condition, y = RT, color = subject)) +
+  geom_point(alpha = .1, position = position_jitter()) +
+  stat_summary(fun.data = mean_cl_boot, geom = "pointrange", alpha = .8) +
+  facet_wrap(~ exp, nrow = 2) +
+  coord_trans(y = "log10")
+```
+## Make a pipe for analysis 
+
+For a power analysis, we need to commit to an analysis approach. In the interest of compute time, let's assume we're analyzing the RT data with a linear regression (rather than a linear *mixed-effects* regression, which would more appropriately reflect the hierarchical / repeated-measures nature of our data). We can revisit this assumption once we have gotten a hang of the general approach to power analyses. 
+
+We start with an analysis of the raw (untransformed) RTs, although this deviates from the way we *generated* the data. Later, we might compare this against an approach that also used linear regression but analyzes log-transformed RTs. 
+
+We again use nest and map. This approach is clean and transparent, and thus suitable for pedagogical reasons. It is also reasonably fast, though I note that one can further speed up these simulations through clever use of *purrr*, as Wednesday Bushong showed in her lecture.
+
+```{r analysis}
+tic()
+d.analysis = d %>%
+  group_by(exp) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(RT ~ condition, data = .x)))
+toc()
+```
+
+**NB:** The analysis is *much* slower than the data generation part. This is typically the case and important to remember, as it defines the computational bottleneck for simulations.
+
+## Obtaining power estimates
+
+Now all we have to do is to ask how often an effect of interest reached significance. Say we want to obtain an estimate for the power of our analysis approach with regard to the treatment effect of condition B (against the baseline/control condition A):
+
+```{r power}
+summary(d.analysis$model[[1]])
+
+d.analysis %>%
+  mutate(coefs = map(model, tidy)) %>%
+  unnest(coefs) %>%
+  filter(term == "conditionB") %>%
+  ungroup() %>%
+  summarise(
+    power = mean(p.value < .05),
+    negative.effect = mean(estimate < 0))
+```
+
+This result should be surprising giving the plot visualizing the by-condition means above. Can you think of a reason why we obtain such high power?
+
+## Power is meaningless in the absence of a Type I error estimate
+
+Power can be high simply because we *always* find signficance ... even when there are no differences between conditions. It is thus necessary to also obtain Type I error estimates for the analysis approach. This is of interest in and off itself. But it also allows us to estimates *Type I error-corrected power*. For that we simply obtain the statistic threshold (e.g., the *t*-value) for which the Type I error matches the target Type I error (e.g., .05), and the ask how often we obtain that statistic under the power simulation.
+
+
+# Parallelizing analyses
+
+As we've seen above, the analyses can slow things down quite a bit. One simple and helpful tool in this context is the function *future_map* (and its relatives) from the library *furrr*, which combines the parallelization package *future* and with *purrr*'s map. Future allows us to code in the same way regardless of whether we want to execute code serially, or in parallel over multiple cores on our computer or even over dozens of CPUs on a distributed compute cluster. All we need to change is the 'plan' that determines how future operations are to be scheduled and processed. Thanks to Zach Burchill for help with this section.
+
+```{r}
+# Running this might cause a system dialogue to allow R to accept incoming network connections. 
+# I denied this request, which might affect the behavior of future. 
+options(mc.cores = 4)
+plan(multisession, workers = 4)
+
+tic()
+d.analysis = d %>%
+  group_by(exp) %>%
+  nest() %>%
+  mutate(model = future_map(data, ~ lm(RT ~ condition, data = .x)))
+toc()
+```
+
+## Other compute time considerations
 
 There are typically many different ways to achieve the same goal. Some are easier to write, some are easier to read, some are faster, some consume less memory, etc. When we conduct any non-trivial simulation, we move into territory where it pays off to try to be computationally efficient. Here is an example where a small difference in programming makes a big difference in compute time.
 
