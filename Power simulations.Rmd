@@ -160,7 +160,7 @@ We again use nest and map. This approach is clean and transparent, and thus suit
 
 ```{r analysis}
 tic()
-d.analysis = d %>%
+d.lm = d %>%
   group_by(exp) %>%
   nest() %>%
   mutate(model = map(data, ~ lm(RT ~ condition, data = .x)))
@@ -169,14 +169,20 @@ toc()
 
 **NB:** The analysis is *much* slower than the data generation part. This is typically the case and important to remember, as it defines the computational bottleneck for simulations.
 
+It's always a good idea to check whether the code you ran does what you intended (e.g., in terms of running the model over the right data frames). Here's one example model that we've fit.
+
+```{r}
+summary(d.lm$model[[1]])
+```
+
+
 ## Obtaining power estimates
 
 Now all we have to do is to ask how often an effect of interest reached significance. Say we want to obtain an estimate for the power of our analysis approach with regard to the treatment effect of condition B (against the baseline/control condition A):
 
 ```{r power}
-summary(d.analysis$model[[1]])
-
-d.analysis %>%
+tic()
+d.lm %>%
   mutate(coefs = map(model, tidy)) %>%
   unnest(coefs) %>%
   filter(term == "conditionB") %>%
@@ -184,6 +190,7 @@ d.analysis %>%
   summarise(
     power = mean(p.value < .05),
     negative.effect = mean(estimate < 0))
+toc()
 ```
 
 This result should be surprising giving the plot visualizing the by-condition means above. Can you think of a reason why we obtain such high power?
@@ -192,23 +199,53 @@ This result should be surprising giving the plot visualizing the by-condition me
 
 Power can be high simply because we *always* find signficance ... even when there are no differences between conditions. It is thus necessary to also obtain Type I error estimates for the analysis approach. This is of interest in and off itself. But it also allows us to estimates *Type I error-corrected power*. For that we simply obtain the statistic threshold (e.g., the *t*-value) for which the Type I error matches the target Type I error (e.g., .05), and the ask how often we obtain that statistic under the power simulation.
 
+## Adapting the analysis approach in response to the problems we've identified
+
+We can use an LME (linear mixed-effects regression a.k.a GLMM with a Gaussian(identity) link) to address the inflated Type I error. But beware that this will be substantially slower:
+
+```{r lme}
+tic()
+d.lme = d %>%
+  group_by(exp) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lmer(RT ~ condition + 
+                                    (1 | subject), 
+                                  data = .x, control = 
+                                    lmerControl(optimizer = "bobyqa"))))
+toc()
+
+d.lme %>%
+  # Something's broken (bug reported) with tidy_lmer and the newest version of lmerTest
+  #  mutate(coefs = map(model, tidy)) %>%
+  mutate(coefs = map(model, ~ summary(.x) %>% coefficients())) %>%
+  # ADD NAMING AFTEr summery (term and might as well make names same as for tidy) XXXXXXXXXXXXXXXXXXXXXXXx
+  unnest(coefs) %>%
+  filter(term == "conditionB") %>%
+  ungroup() %>%
+  # This will change if tidy() works again:
+  summarise(
+    power = mean(`Pr(>|t|)` < .05),
+    negative.effect = mean(Estimate < 0))
+```
 
 # Parallelizing analyses
 
 As we've seen above, the analyses can slow things down quite a bit. One simple and helpful tool in this context is the function *future_map* (and its relatives) from the library *furrr*, which combines the parallelization package *future* and with *purrr*'s map. Future allows us to code in the same way regardless of whether we want to execute code serially, or in parallel over multiple cores on our computer or even over dozens of CPUs on a distributed compute cluster. All we need to change is the 'plan' that determines how future operations are to be scheduled and processed. Thanks to Zach Burchill for help with this section.
 
 ```{r}
-# Running this might cause a system dialogue to allow R to accept incoming network connections. 
-# I denied this request, which might affect the behavior of future. 
-options(mc.cores = 4)
-plan(multisession, workers = 4)
-
-tic()
-d.analysis = d %>%
-  group_by(exp) %>%
-  nest() %>%
-  mutate(model = future_map(data, ~ lm(RT ~ condition, data = .x)))
-toc()
+# Running this might cause a system dialogue to allow R to accept incoming 
+# network connections. I denied this request, which might affect the behavior 
+# of future. As there seems to be a MAC-specific bug that is currently being
+# resolved by the developers of future, I'll leave this for later.
+# options(mc.cores = 4)
+# plan(multisession, workers = 4)
+# 
+# tic()
+# d.analysis = d %>%
+#   group_by(exp) %>%
+#   nest() %>%
+#   mutate(model = future_map(data, ~ lm(RT ~ condition, data = .x)))
+# toc()
 ```
 
 ## Other compute time considerations
