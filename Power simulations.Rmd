@@ -24,13 +24,14 @@ options(width = 100, mc.cores = 4)
 
 ```{r libraries, include=FALSE}
 library("tidyverse") 
-library("magrittr")  # for pipes
-library("broom")     # for elegant handling of model outputs
-library("lme4")      # for GLMMs
-library("lmerTest")  # to get p-values for LMEs
-library("tictoc")    # for measuring compute time
-library("future")    # for parallel computing over multiple corrs
-library("furrr")     # for parallelization of map and other purrrs
+library("magrittr")     # for pipes
+library("broom")        # for elegant handling of model outputs
+library("broom.mixed")  # for elegant handling of model outputs for GLMM
+library("lme4")         # for GLMMs
+library("lmerTest")     # to get p-values for LMEs
+library("tictoc")       # for measuring compute time
+library("future")       # for parallel computing over multiple corrs
+library("furrr")        # for parallelization of map and other purrrs
 
 theme_set(theme_bw())
 ```
@@ -59,8 +60,7 @@ Power is the estimated proportion of times that you will obtain a significant re
    * And and and ... for example, there might be auto-correlations between trials, subjects might have attentional lapses, experimenters might make mistakes during the item creation etc. For any of these and other possibilities, we can decide whether we want to try to account for them in our power estimates.
 
 ## Parametric vs. non-parametric approaches
-There's broadly two types of approaches---just as for most of statistics: parametric and non-parametric approaches. In the parametric approach, we simulate data from parametric distributions (e.g., Normal, binomial, poisson, etc.). Under non-parametric approaches, such as cross-validation or bootstrap, we use previously collected data and resample it---typically with replacement---
-in order to simulate the 'natural' or 'actual' distribution of the data. Both approaches have their pros and cons. Here we focus on parametric approaches. This is not an endorsement of those approaches, but rather a choice driven by pedagogical considerations: it allows us to keep our focus on the generative logic behind simulation-based approaches.
+There's broadly two types of approaches---just as for most of statistics: parametric and non-parametric approaches. In the parametric approach, we simulate data from parametric distributions (e.g., Normal, binomial, poisson, etc.). Under non-parametric approaches, such as cross-validation or bootstrap, we use previously collected data and resample it---typically with replacement---in order to simulate the 'natural' or 'actual' distribution of the data. Both approaches have their pros and cons (for a comparison of both approaches against reading data, see Burchill & Jaeger, in prep). Here we focus on parametric approaches. This is not an endorsement of those approaches, but rather a choice driven by pedagogical considerations: it allows us to keep our focus on the generative logic behind simulation-based approaches.
 
 
 # An example
@@ -76,9 +76,9 @@ Correct.mu.cond = c("A" = .5,
 Correct.sd.bySubj = 1
 
 # Information about distribution of RT variable
-RT.mu.cond = c("A" = 6.2, 
-               "B" = 6.1, 
-               "C" = 7.3)
+RT.mu.cond = c("A" = 5.2, 
+               "B" = 5.0, 
+               "C" = 6.3)
 RT.sd.bySubj = .6
 RT.sd.resid = .3
 ```
@@ -104,7 +104,7 @@ d =
     muLogOddsCorrect = qlogis(Correct.mu.cond[condition]),
     muLogRT = RT.mu.cond[condition]
   ) %>%
-  group_by(subject) %>%
+  group_by(exp, subject) %>%
   mutate(
     muLogOddsCorrect.bySubject = rnorm(1, 0, Correct.sd.bySubj),
     muLogRT.bySubject = rnorm(1, 0, RT.sd.bySubj)
@@ -118,7 +118,7 @@ d =
 toc()
 ```
 
-So far, we've created the design and underlying ground truth of ```r nexp``` experiments. Next, let's *generate* response data---accuracy and RTs---by randomly sampling from the design. We will set a seed for replicability's sake.
+So far, we've created the design and underlying ground truth of ```r nexp``` experiments. Next, let's *generate* response data---accuracy and RTs---by randomly sampling from the design. We will set a seed for replicability's sake. 
 
 ```{r sample}
 set.seed(76)
@@ -127,7 +127,7 @@ tic()
 d %<>%
   mutate(
     correct = rbinom(nrow(.), 1, muPCorrect),
-    RT = round(exp(rnorm(nrow(.), muLogRT, RT.sd.resid)), 0)
+    RT = 100 + round(exp(rnorm(nrow(.), muLogRT, RT.sd.resid)), 0)
   ) 
 toc()
 
@@ -135,20 +135,21 @@ toc()
 # Here we just show the output that without the ground truth (but)
 # keep it around b/c why not).
 d %>%
-  select(-starts_with("mu")) 
+  select(-starts_with("mu"))
 ```
 ## Visualize example experiments
 
 To get an idea of the type of data we've just generated and how it varies across experiments, let's visualize 8 randomly drawn experiments:
 
-```{r visualize}
+```{r visualize, fig.height=8}
 d %>% 
-  filter(exp == sample(x = unique(exp), size = 8,replace = F)) %>%
-  ggplot(aes(x = condition, y = RT, color = subject)) +
+  filter(exp %in% sample(x = unique(exp), size = 8, replace = F)) %>%
+  ggplot(aes(x = condition, y = RT, color = subject, group = subject)) +
   geom_point(alpha = .1, position = position_jitter()) +
-  stat_summary(fun.data = mean_cl_boot, geom = "pointrange", alpha = .8) +
+  stat_summary(fun.y = mean, geom = "line", alpha = .6) +
+  stat_summary(fun.data = mean_cl_boot, geom = "pointrange", alpha = .6) +
   facet_wrap(~ exp, nrow = 2) +
-  coord_trans(y = "log10")
+  coord_trans(y = "log10") + theme(legend.position = "bottom")
 ```
 ## Make a pipe for analysis 
 
@@ -183,7 +184,7 @@ Now all we have to do is to ask how often an effect of interest reached signific
 ```{r power}
 tic()
 d.lm %>%
-  mutate(coefs = map(model, tidy)) %>%
+  mutate(coefs = map(model, broom::tidy)) %>%
   unnest(coefs) %>%
   filter(term == "conditionB") %>%
   ungroup() %>%
@@ -193,41 +194,141 @@ d.lm %>%
 toc()
 ```
 
-This result should be surprising giving the plot visualizing the by-condition means above. Can you think of a reason why we obtain such high power?
-
 ## Power is meaningless in the absence of a Type I error estimate
 
 Power can be high simply because we *always* find signficance ... even when there are no differences between conditions. It is thus necessary to also obtain Type I error estimates for the analysis approach. This is of interest in and off itself. But it also allows us to estimates *Type I error-corrected power*. For that we simply obtain the statistic threshold (e.g., the *t*-value) for which the Type I error matches the target Type I error (e.g., .05), and the ask how often we obtain that statistic under the power simulation.
 
-## Adapting the analysis approach in response to the problems we've identified
+First, we set the effect to zero---here the effect of Condition B vs. A:
 
-We can use an LME (linear mixed-effects regression a.k.a GLMM with a Gaussian(identity) link) to address the inflated Type I error. But beware that this will be substantially slower:
+```{r}
+# Information about distribution of RT variable
+RT.mu.cond = c("A" = 5.2, 
+               "B" = 5.2, 
+               "C" = 6.3)
+```
 
-```{r lme}
-tic()
-d.lme = d %>%
+Next, let's regenerate the data. Since we're reusing the same code, let's make functions out of the code. And then just call them in one pipe:
+
+```{r, include=FALSE}
+my.generate = function(Correct.mu.cond, RT.mu.cond) {
+  crossing(
+    exp = 1:nexp,
+    condition = c("A","B","C"),
+    trial = 1:ntrial,
+    subject = 1:nsubj
+  ) %>%
+    mutate(
+      muLogOddsCorrect = qlogis(Correct.mu.cond[condition]),
+      muLogRT = RT.mu.cond[condition]
+    ) %>%
+    group_by(exp, subject) %>%
+    mutate(
+      muLogOddsCorrect.bySubject = rnorm(1, 0, Correct.sd.bySubj),
+      muLogRT.bySubject = rnorm(1, 0, RT.sd.bySubj)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      muPCorrect = plogis(muLogOddsCorrect + muLogOddsCorrect.bySubject),
+      muLogRT = muLogRT + muLogRT.bySubject
+    ) %>%
+    mutate_at(c("condition", "subject"), factor)
+}
+
+my.sample =
+  . %>%
+  mutate(
+    correct = rbinom(nrow(.), 1, muPCorrect),
+    RT = 100 + round(exp(rnorm(nrow(.), muLogRT, RT.sd.resid)), 0)
+  )
+
+my.lm = 
+  . %>%
+  group_by(exp) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(RT ~ condition, data = .x)))
+
+get.prop.significant = 
+  . %>%
+  mutate(coefs = map(model, broom::tidy)) %>%
+  unnest(coefs) %>%
+  filter(term == "conditionB") %>%
+  ungroup() %>%
+  summarise(
+    significant = mean(p.value < .05),
+    negative.effect = mean(estimate < 0))
+```
+
+```{r Type I}
+d0 = 
+  my.generate(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond) %>%
+  my.sample() 
+
+d0 %>%
+  my.lm() %>%
+  get.prop.significant()
+```
+
+It appears that in this particular case, the linear regression of raw RTs is actually *conservative*.
+
+
+## Comparison to linear mixed-effects regression
+
+We can use an LME (linear mixed-effects regression a.k.a GLMM with a Gaussian(identity) link) to address the inflated Type I error. But beware that this will be substantially slower. It can also lead to convergence warnings. Here, we are oppressing them, but for actual power and Type I analyses we would have to exclude non-converged models from the analysis (and report the rate of convergence failures separately).
+
+```{r lme, warning=FALSE}
+my.lme = 
+  . %>%
   group_by(exp) %>%
   nest() %>%
   mutate(model = map(data, ~ lmer(RT ~ condition + 
                                     (1 | subject), 
                                   data = .x, control = 
                                     lmerControl(optimizer = "bobyqa"))))
-toc()
 
-d.lme %>%
-  # Something's broken (bug reported) with tidy_lmer and the newest version of lmerTest
-  #  mutate(coefs = map(model, tidy)) %>%
-  mutate(coefs = map(model, ~ summary(.x) %>% coefficients())) %>%
-  # ADD NAMING AFTEr summery (term and might as well make names same as for tidy) XXXXXXXXXXXXXXXXXXXXXXXx
-  unnest(coefs) %>%
-  filter(term == "conditionB") %>%
-  ungroup() %>%
-  # This will change if tidy() works again:
-  summarise(
-    power = mean(`Pr(>|t|)` < .05),
-    negative.effect = mean(Estimate < 0))
+tic()
+d %>%
+  my.lme() %>%
+  get.prop.significant()
+toc()
 ```
 
+And let's look at the Type I error, too:
+
+```{r, warning=FALSE}
+d0 %>%
+  my.lme() %>%
+  get.prop.significant()
+```
+
+The LME is still conservative. Recall that we generated RTs from *log-transformed* means. Let's see how how acknowledging this property in our analysis changes things.
+
+```{r log lme}
+my.loglme = 
+  . %>%
+  group_by(exp) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lmer(log(RT) ~ condition + 
+                                    (1 | subject), 
+                                  data = .x, control = 
+                                    lmerControl(optimizer = "bobyqa"))))
+
+d %>%
+  my.loglme() %>%
+  get.prop.significant()
+
+d0 %>%
+  my.loglme() %>%
+  get.prop.significant()
+```
+
+
+# Refining assumptions
+
+There's a lot of different decisions we could make in estimating the Type I error and power. Here we have focused on diffferent analysis approaches. We could also explore the consequences of assumptions about the data. For example, would anything change if we had missing data or outliers caused by occasional attentional lapses? Would anything change if there was a dependence between the accuracy and RTs of responses? What about floor or ceiling effects, e.g., due to the overall complexity of the experimental task we use?
+
+For adequate estimates, it is important to 1) carefully explore whether the assumptions of the data generation process are likely to match those of the actual data we will obtain in our actual experiment, and to 2) carefully think about whether mismatches between assumptions and the actual data are likely to bias our estimates of the Type I error and power.
+ 
+ 
 # Parallelizing analyses
 
 As we've seen above, the analyses can slow things down quite a bit. One simple and helpful tool in this context is the function *future_map* (and its relatives) from the library *furrr*, which combines the parallelization package *future* and with *purrr*'s map. Future allows us to code in the same way regardless of whether we want to execute code serially, or in parallel over multiple cores on our computer or even over dozens of CPUs on a distributed compute cluster. All we need to change is the 'plan' that determines how future operations are to be scheduled and processed. Thanks to Zach Burchill for help with this section.
@@ -252,46 +353,15 @@ As we've seen above, the analyses can slow things down quite a bit. One simple a
 
 There are typically many different ways to achieve the same goal. Some are easier to write, some are easier to read, some are faster, some consume less memory, etc. When we conduct any non-trivial simulation, we move into territory where it pays off to try to be computationally efficient. Here is an example where a small difference in programming makes a big difference in compute time.
 
-We will create 10 simulated experiments with 24 subjects and 60 trials each for 3 conditions. For each trial, we set and simulate accuracy and reaction times.
+We will create 10 simulated experiments with 24 subjects and 60 trials each for 3 conditions. For each trial, we set and simulate accuracy and reaction times. We'll resuse the condition means from the Type I error simulation above.
 
 ```{r}
 nexp = 10
 nsubj = 24
 ntrial = 60
 
-tic()
 d = 
-  crossing(
-    exp = 1:nexp,
-    condition = c("A","B","C"),
-    trial = 1:ntrial,
-    subject = 1:nsubj
-  ) %>%
-  mutate(
-    muLogOddsCorrect = qlogis(case_when(
-      condition == "A" ~ .5,
-      condition == "B" ~ .61,
-      condition == "C" ~ .88
-    )),
-    muLogRT = case_when(
-      condition == "A" ~ 6.2,
-      condition == "B" ~ 6.2,
-      condition == "C" ~ 7.3
-    )
-  ) %>%
-  group_by(subject) %>%
-  mutate(
-    muLogOddsCorrect.bySubject = rnorm(1, 0, 1.5),
-    muLogRT.bySubject = rnorm(1, 0, 0.3)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    muPCorrect = plogis(muLogOddsCorrect + muLogOddsCorrect.bySubject),
-    muLogRT = muLogRT + muLogRT.bySubject
-  ) %>%
-  as_tibble() %>%
-  mutate_at(c("condition", "subject"), factor)
-toc()
+  my.generate(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond)
 ```
 
 Now let's sample the responses either rowwise() or as a vector. We're setting a seed to make the compute time comparison maximally informative. First, rowwise:
