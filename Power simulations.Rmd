@@ -40,7 +40,11 @@ theme_set(theme_bw())
 Work through the examples in the Gelman and Hill reading and do Exercises 7.1 & 7.3 (at the end of Ch. 7) and 8.1 (Ch 8). Create an R markdown document with your solutions and send it to the instructor before class.
 
 # The simulation-based approach
+
 For many situations, power can be calculated analytically (see also Gelman and Hill, p. 171 "*Why do we need simulation for predictive inferences?*"). However, often we find ourselves in situations where this isn't possible or at least not trivial (for us). In that case taking a simulation-based approach is simple and powerful. You can use this approach to obtain estimates of power, Type I error, or simply to build intuitions about how an analytical or visualization tool works. Here we focus on power simulations. 
+
+*There are many packages to facilitate this type of simulation in R.* See the end of this handout. In order to build up a conceptual understanding of power simulations first, we go through them step by step rather than to immediately jump to software that does all of these steps for you.
+
 
 ## Power simulations
 Power is the estimated proportion of times that you will obtain a significant results, if you repeat an experiment over and over again. As such, power estimates depend on:
@@ -91,7 +95,9 @@ To familiarize ourselves with power simulations, we will create ```r nexp``` sim
 
 ## Make a pipe for data generation
 
-We might later embed this into a function, but for now let's just make a one-time use pipe. As a first step, let's make a pipe that defines our design. The *dplyr* function *crossing* is very helpful in that it makes it trivial to create all unique combinations of an arbitrary number of variables and their values. We're surrounding the pipe by tic() and toc() to measure the compute time.
+### Defining the *design* (and number of simulated experiments)
+
+As a first step, let's make a pipe that defines our design. The *dplyr* function *crossing* is very helpful in that it makes it trivial to create all unique combinations of an arbitrary number of variables and their values. We're surrounding the pipe by tic() and toc() to measure the compute time. (We might later embed this into a function, but for now let's just make a one-time use pipe.)
 
 ```{r design}
 tic()
@@ -120,6 +126,8 @@ d =
 toc()
 ```
 
+### *Sample* outcome data 
+
 So far, we've created the design and underlying ground truth of ```r nexp``` experiments. Next, let's *generate* response data---accuracy and RTs---by randomly sampling from the design. We will set a seed for replicability's sake. 
 
 ```{r sample}
@@ -139,6 +147,7 @@ toc()
 d %>%
   select(-starts_with("mu"))
 ```
+
 ## Visualize example experiments
 
 To get an idea of the type of data we've just generated and how it varies across experiments, let's visualize 8 randomly drawn experiments:
@@ -153,7 +162,9 @@ d %>%
   facet_wrap(~ exp, nrow = 2) +
   coord_trans(y = "log10") + theme(legend.position = "bottom")
 ```
-## Make a pipe for analysis 
+
+
+## Make a pipe for *analysis* 
 
 For a power analysis, we need to commit to an analysis approach. In the interest of compute time, let's assume we're analyzing the RT data with a linear regression (rather than a linear *mixed-effects* regression, which would more appropriately reflect the hierarchical / repeated-measures nature of our data). We can revisit this assumption once we have gotten a hang of the general approach to power analyses. 
 
@@ -196,29 +207,39 @@ d.lm %>%
 toc()
 ```
 
-## Power is meaningless in the absence of a Type I error estimate
-
-Power can be high simply because we *always* find signficance ... even when there are no differences between conditions. It is thus necessary to also obtain Type I error estimates for the analysis approach. This is of interest in and off itself. But it also allows us to estimates *Type I error-corrected power*. For that we simply obtain the statistic threshold (e.g., the *t*-value) for which the Type I error matches the target Type I error (e.g., .05), and the ask how often we obtain that statistic under the power simulation.
-
-First, we set the effect to zero---here the effect of Condition B vs. A:
-
-```{r}
-# Information about distribution of RT variable
-RT.mu.cond = c("A" = 5.2, 
-               "B" = 5.2, 
-               "C" = 6.3)
-```
-
-Next, let's regenerate the data. Since we're reusing the same code, let's make functions out of the code. And then just call them in one pipe:
+## Power as a function of sample and effect size
 
 ```{r, include=FALSE}
-my.generate = function(Correct.mu.cond, RT.mu.cond) {
+min_nsubj = nsubj
+max_nsubj = nsubj * 3
+step_nsubj = nsubj / 2
+
+sim.conds = crossing(
+  nsubj = seq(min_nsubj, max_nsubj, step_nsubj),
+  RT.mu.A = RT.mu.cond["A"],
+  # create an effect (difference of Cond B compared to Cond A) that is 
+  # half the size as above, identical, or twice the size:
+  RT.mu.B = RT.mu.cond["A"] + 
+    (RT.mu.cond["B"] - RT.mu.cond["A"]) * c(.5, 1, 2),
+  RT.mu.C = RT.mu.cond["C"]
+) 
+
+d = sim.conds %>% 
   crossing(
     exp = 1:nexp,
     condition = c("A","B","C"),
     trial = 1:ntrial,
     subject = 1:nsubj
-  ) %>%
+  )
+```
+
+Now that we've seen how to estimate power for a specific set of assumptions, design, effect size, and sample size, let's see how this power estimate changes as a function of effect size and sample size. For example, we might want to be conservative about our effect size estimate and entertain a range of effect sizes. Here we will entertain effect sizes half the size as in the simulation above or twice the size. We might also wonder how many subject we should run in order to reach a certain target power (e.g., 85%). To that end, we will increase the number of subjects from ```r min_nsubj``` in steps of ```r step_nsubj``` up to ```r max_nsubj```.  
+
+Since we're reusing the same code, let's make functions out of the code. And then just call them in one pipe:
+
+```{r, include=FALSE}
+my.parameterize = 
+  . %>%
     mutate(
       muLogOddsCorrect = qlogis(Correct.mu.cond[condition]),
       muLogRT = RT.mu.cond[condition]
@@ -234,7 +255,7 @@ my.generate = function(Correct.mu.cond, RT.mu.cond) {
       muLogRT = muLogRT + muLogRT.bySubject
     ) %>%
     mutate_at(c("condition", "subject"), factor)
-}
+
 
 my.sample =
   . %>%
@@ -260,9 +281,36 @@ get.prop.significant =
     negative.effect = mean(estimate < 0))
 ```
 
+
+## Power is meaningless in the absence of a Type I error estimate
+
+Power can be high simply because we *always* find signficance ... even when there are no differences between conditions. It is thus necessary to also obtain Type I error estimates for the analysis approach. This is of interest in and off itself. But it also allows us to estimates *Type I error-corrected power*. For that we simply obtain the statistic threshold (e.g., the *t*-value) for which the Type I error matches the target Type I error (e.g., .05), and the ask how often we obtain that statistic under the power simulation.
+
+First, we set the effect to zero---here the effect of Condition B vs. A:
+
+```{r}
+# Information about distribution of RT variable
+RT.mu.cond = c("A" = 5.2, 
+               "B" = 5.2, 
+               "C" = 6.3)
+```
+ 
+ 
+Next, let's regenerate the data. Since we'll also be reusing the steps necessary to create a design, we're creating a function for that as well. This is the same code we've used for the first power simulation above.
+
 ```{r Type I}
+my.design = function(Correct.mu.cond, RT.mu.cond) {
+  crossing(
+    exp = 1:nexp,
+    condition = c("A","B","C"),
+    trial = 1:ntrial,
+    subject = 1:nsubj
+  ) 
+}
+
 d0 = 
-  my.generate(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond) %>%
+  my.design(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond) %>%
+  my.parameterize() %>%
   my.sample() 
 
 d0 %>%
@@ -331,6 +379,23 @@ There's a lot of different decisions we could make in estimating the Type I erro
 For adequate estimates, it is important to 1) carefully explore whether the assumptions of the data generation process are likely to match those of the actual data we will obtain in our actual experiment, and to 2) carefully think about whether mismatches between assumptions and the actual data are likely to bias our estimates of the Type I error and power.
  
  
+# When you already have data
+
+Above we have assumed that we set the parameters for our simulation arbitrarily. If we already have some pilot data, or if we're interested in calculating the power for an experiment we have already run (we *should* have done that earlier, but ...), then we can plug in the quantities we obtain from our analysis into the design portion of the script shown above. We  might also use the *predict()* function of our analysis (many, but not all, analysis approaches in R have such a function) to generate the predicted means for any new data.
+
+*NB:* Any good analysis of our data will also provide estimates of our uncertainty (e.g., the standard error of our coefficient). If we just use the maximum likelihood **point** estimate of published results, we might over-estimate our effect size and thus our power (because of the 'significance filter': significant results are more likely to get published, Vasishth et al., 2018).
+
+
+# Existing R packages for power analyses
+
+Above we intentionally went through each of the steps of a simulation. Of course, R provides a number of packages for power simulations. These come in particularly handily when you already have some pilot data (or an entire experiment) and want to calculate power based on those data. 
+
+
+ 1. Use functions that draw simulated examples from any model type for which that is supported. E.g., the *simulate()* function from the arm package by Gelman (the same Gelman as in Gelman and Hill). That combines the design and sample parts of the script (so you only need to apply the analysis part after that). Some of these functions can also draw new data samples while taking into account uncertainty in e.g., the effect size estimates.
+ 
+ 2.  Use a power simulation package, e.g., *simr*, to take all the fun away from you.
+ 
+ 
 # Parallelizing analyses
 
 As we've seen above, the analyses can slow things down quite a bit. One simple and helpful tool in this context is the function *future_map* (and its relatives) from the library *furrr*, which combines the parallelization package *future* and with *purrr*'s map. Future allows us to code in the same way regardless of whether we want to execute code serially, or in parallel over multiple cores on our computer or even over dozens of CPUs on a distributed compute cluster. All we need to change is the 'plan' that determines how future operations are to be scheduled and processed. Thanks to Zach Burchill for help with this section.
@@ -363,7 +428,8 @@ nsubj = 24
 ntrial = 60
 
 d = 
-  my.generate(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond)
+  my.design(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond) %>%
+  my.parameterize()
 ```
 
 Now let's sample the responses either rowwise() or as a vector. We're setting a seed to make the compute time comparison maximally informative. First, rowwise:
@@ -404,6 +470,7 @@ As you can see, the difference in compute time is enormous (but the output is th
 # References
 
  * Gelman & Hill. 2007. Data Analysis Using Regression and Multilevel/Hierarchical Models. (Ch. 7.1-7.2, 8.1-8.3, ~20pp)
+ * Vasishth, S., Mertzen, D., Jäger, L. A., & Gelman, A. 2018. The statistical significance filter leads to overoptimistic expectations of replicability. Journal of Memory and Language, 103, 151-175.
 
 # Session info
 ```{r session_info, echo=FALSE, results='markup'}
