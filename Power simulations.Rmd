@@ -1,5 +1,5 @@
 ---
-title: "Simualtion-based approaches to Type I and II error analyses"
+title: "Simulation-based approaches to Type I and II error analyses"
 author: "T. Florian Jaeger"
 date: "11/19/2019"
 output:
