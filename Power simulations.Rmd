@@ -213,31 +213,30 @@ toc()
 min_nsubj = nsubj
 max_nsubj = nsubj * 3
 step_nsubj = nsubj / 2
-
-sim.conds = crossing(
-  nsubj = seq(min_nsubj, max_nsubj, step_nsubj),
-  RT.mu.A = RT.mu.cond["A"],
-  # create an effect (difference of Cond B compared to Cond A) that is 
-  # half the size as above, identical, or twice the size:
-  RT.mu.B = RT.mu.cond["A"] + 
-    (RT.mu.cond["B"] - RT.mu.cond["A"]) * c(.5, 1, 2),
-  RT.mu.C = RT.mu.cond["C"]
-) 
-
-d = sim.conds %>% 
-  crossing(
-    exp = 1:nexp,
-    condition = c("A","B","C"),
-    trial = 1:ntrial,
-    subject = 1:nsubj
-  )
 ```
 
-Now that we've seen how to estimate power for a specific set of assumptions, design, effect size, and sample size, let's see how this power estimate changes as a function of effect size and sample size. For example, we might want to be conservative about our effect size estimate and entertain a range of effect sizes. Here we will entertain effect sizes half the size as in the simulation above or twice the size. We might also wonder how many subject we should run in order to reach a certain target power (e.g., 85%). To that end, we will increase the number of subjects from ```r min_nsubj``` in steps of ```r step_nsubj``` up to ```r max_nsubj```.  
+Now that we've seen how to estimate power for a specific set of assumptions, design, effect size, and sample size, let's see how this power estimate changes as a function of effect size and sample size. For example, we might want to be conservative about our effect size estimate and entertain a range of effect sizes. Here we will entertain effect sizes half the size as in the simulation above or twice the size. We might also wonder how many subject we should run in order to reach a certain target power (e.g., 85%). To that end, we will increase the number of subjects from ```r min_nsubj``` in steps of ```r step_nsubj``` up to ```r max_nsubj```. Together, our sample and effect size manipulations describe a 5 x 3 design.
 
-Since we're reusing the same code, let's make functions out of the code. And then just call them in one pipe:
+Since we're reusing the same code used above, let's make functions and/or named pipes:
 
-```{r, include=FALSE}
+```{r}
+my.design = function(Correct.mu.cond, RT.mu.cond,
+                     nexp = 1000, nsubj = 24, ntrial = 16) {
+  cat(paste("Creating", 
+              nexp, "designs for", 
+              nsubj, "subjects and",
+              ntrial, "trials.\n"))
+  cat(paste("Condition means are:\n", 
+              paste(Correct.mu.cond, collapse = ","), "\n",
+              paste(RT.mu.cond, collapse = ","), "\n\n"))
+  crossing(
+    exp = 1:nexp,
+    subject = 1:nsubj,
+    trial = 1:ntrial,
+    condition = c("A","B","C")
+  ) 
+}
+
 my.parameterize = 
   . %>%
     mutate(
@@ -281,6 +280,49 @@ get.prop.significant =
     negative.effect = mean(estimate < 0))
 ```
 
+We could generate one gigantic data frame with all the generate data. But since that will in practice get very large, we instead run each of the 5 x 3 = 15 simulations separately and only join together their power estimates:
+
+```{r}
+# Define the design for our *power* simulations
+d.power = crossing(
+  nsubj = seq(min_nsubj, max_nsubj, step_nsubj),
+  RT.mu.cond.B = c(5.1, 5, 4.8)
+) %>%
+  # Get power for each of the design cells
+  mutate(power = 
+           map2(
+             .x = nsubj, 
+             .y = RT.mu.cond.B, 
+             .f = function(x, y) {
+               RT.mu.cond["B"] = y
+               
+               my.design(Correct.mu.cond, 
+                         RT.mu.cond,
+                         nsubj = x) %>%
+                 my.parameterize() %>%
+                 my.sample() %>%
+                 my.lm() %>%
+                 get.prop.significant() %>%
+                 select(significant) %>%
+                 as.numeric()
+             }
+             )
+         )
+
+d.power %>%
+  mutate(power = unlist(power)) %>%
+  ggplot(aes(x = factor(nsubj), y = power, color = factor(RT.mu.cond.B), 
+             group = factor(RT.mu.cond.B))) +
+  geom_point() +
+  geom_line() +
+  scale_x_discrete("Sample size (# of subjects)") +
+  scale_color_discrete("Effect size",
+                       breaks = c(5.1, 5, 4.8),
+                       labels = c("half of original",
+                                  "original", 
+                                  "twice original"))
+```
+
 
 ## Power is meaningless in the absence of a Type I error estimate
 
@@ -296,18 +338,9 @@ RT.mu.cond = c("A" = 5.2,
 ```
  
  
-Next, let's regenerate the data. Since we'll also be reusing the steps necessary to create a design, we're creating a function for that as well. This is the same code we've used for the first power simulation above.
+Next, let's regenerate the data. 
 
 ```{r Type I}
-my.design = function(Correct.mu.cond, RT.mu.cond) {
-  crossing(
-    exp = 1:nexp,
-    condition = c("A","B","C"),
-    trial = 1:ntrial,
-    subject = 1:nsubj
-  ) 
-}
-
 d0 = 
   my.design(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond) %>%
   my.parameterize() %>%
