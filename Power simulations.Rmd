@@ -456,18 +456,14 @@ There are typically many different ways to achieve the same goal. Some are easie
 We will create 10 simulated experiments with 24 subjects and 60 trials each for 3 conditions. For each trial, we set and simulate accuracy and reaction times. We'll resuse the condition means from the Type I error simulation above.
 
 ```{r}
-nexp = 10
-nsubj = 24
-ntrial = 60
-
 d = 
-  my.design(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond) %>%
+  my.design(RT.mu.cond = RT.mu.cond, Correct.mu.cond = Correct.mu.cond, nsubj = 24, ntrial = 20, nexp = 10) %>%
   my.parameterize()
 ```
 
 Now let's sample the responses either rowwise() or as a vector. We're setting a seed to make the compute time comparison maximally informative. First, rowwise:
 
-```{r}
+```{r rowwise}
 set.seed(1234)
 
 tic()
@@ -483,7 +479,7 @@ toc()
 
 And now as a vector:
 
-```{r}
+```{r vector}
 set.seed(1234)
 
 tic()
